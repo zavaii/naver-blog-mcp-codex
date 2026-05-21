@@ -1,6 +1,7 @@
 """MCP Tool 정의.
 
-이 모듈은 Claude가 호출할 수 있는 네이버 블로그 관련 Tool들을 정의합니다.
+이 모듈은 Codex 등 MCP 클라이언트가 호출할 수 있는 네이버 블로그 관련 Tool들을
+정의합니다.
 """
 
 import logging
@@ -9,7 +10,6 @@ from typing import Optional, Dict, Any
 from playwright.async_api import Page
 
 from ..automation.post_actions import create_blog_post, NaverBlogPostError
-from ..automation.image_upload import upload_images
 from ..automation.category_actions import get_categories
 from ..utils.retry import retry_on_error
 from ..utils.error_handler import handle_playwright_error
@@ -32,19 +32,10 @@ TOOLS_METADATA = {
                     "type": "string",
                     "description": "글 본문 내용",
                 },
-                "category": {
-                    "type": "string",
-                    "description": "카테고리 이름 (선택)",
-                },
-                "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "태그 목록 (선택)",
-                },
                 "images": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "첨부할 이미지 파일 경로 목록 (선택). 본문 작성 전에 이미지를 먼저 업로드합니다.",
+                    "description": "첨부할 이미지 파일 경로 목록 (선택). 기본적으로 blog-images 폴더 안 파일만 허용합니다.",
                 },
                 "publish": {
                     "type": "boolean",
@@ -112,8 +103,8 @@ async def handle_create_post(
         page: Playwright Page 객체 (로그인된 상태)
         title: 글 제목
         content: 글 본문 내용
-        category: 카테고리 이름 (선택)
-        tags: 태그 목록 (선택)
+        category: 현재 미지원
+        tags: 현재 미지원
         images: 첨부할 이미지 파일 경로 목록 (선택)
         publish: 즉시 발행 여부 (기본: True, False면 임시저장)
 
@@ -133,46 +124,42 @@ async def handle_create_post(
     """
     try:
         logger.info(f"글 작성 시작: {title}")
-        images_uploaded = 0
 
-        # 1. 이미지 업로드 (본문 작성 전)
-        if images:
-            logger.info(f"이미지 업로드 시작: {len(images)}개")
-            try:
-                upload_result = await upload_images(page, images)
-                images_uploaded = len(upload_result.get("uploaded", []))
+        if category or tags:
+            return {
+                "success": False,
+                "message": "카테고리와 태그 지정은 아직 지원하지 않습니다.",
+                "post_url": None,
+                "title": title,
+                "images_uploaded": 0,
+            }
 
-                if upload_result.get("failed"):
-                    logger.warning(f"일부 이미지 업로드 실패: {upload_result['failed']}")
-
-                logger.info(f"이미지 업로드 완료: {images_uploaded}/{len(images)}개")
-
-            except UploadError as e:
-                logger.error(f"이미지 업로드 실패: {e}")
-                return {
-                    "success": False,
-                    "message": f"이미지 업로드 실패: {str(e)}",
-                    "post_url": None,
-                    "title": title,
-                    "images_uploaded": 0,
-                }
-
-        # 2. 본문 작성
+        # 본문 작성, 이미지 업로드, 발행/임시저장을 순서대로 처리
         result = await create_blog_post(
             page=page,
             title=title,
             content=content,
             blog_id=None,  # 현재 로그인된 블로그 사용
             use_html=False,
-            wait_for_completion=publish,
+            publish=publish,
+            images=images,
         )
 
-        # 결과에 이미지 정보 추가
-        result["images_uploaded"] = images_uploaded
-
-        logger.info(f"글 작성 완료: {result.get('post_url', 'N/A')} (이미지 {images_uploaded}개)")
+        logger.info(
+            f"글 작성 완료: {result.get('post_url', 'N/A')} "
+            f"(이미지 {result.get('images_uploaded', 0)}개)"
+        )
         return result
 
+    except UploadError as e:
+        logger.error(f"이미지 업로드 실패: {e}")
+        return {
+            "success": False,
+            "message": f"이미지 업로드 실패: {str(e)}",
+            "post_url": None,
+            "title": title,
+            "images_uploaded": 0,
+        }
     except NaverBlogPostError as e:
         logger.error(f"글 작성 실패: {e}")
         return {
@@ -180,7 +167,7 @@ async def handle_create_post(
             "message": f"글 작성 중 오류가 발생했습니다: {str(e)}",
             "post_url": None,
             "title": title,
-            "images_uploaded": images_uploaded,
+            "images_uploaded": 0,
         }
     except Exception as e:
         # Playwright 에러를 커스텀 에러로 변환
@@ -196,6 +183,7 @@ async def handle_create_post(
             "message": f"예상치 못한 오류: {str(custom_error)}",
             "post_url": None,
             "title": title,
+            "images_uploaded": 0,
         }
 
 

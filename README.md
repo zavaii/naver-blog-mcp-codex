@@ -2,23 +2,24 @@
 
 [![Python](https://img.shields.io/badge/Python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![Playwright](https://img.shields.io/badge/Playwright-1.55.0-green.svg)](https://playwright.dev/)
-[![MCP](https://img.shields.io/badge/MCP-1.20.0+-orange.svg)](https://modelcontextprotocol.io/)
+[![MCP](https://img.shields.io/badge/MCP-1.23.0+-orange.svg)](https://modelcontextprotocol.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Playwright 기반 네이버 블로그 자동화를 위한 Model Context Protocol (MCP) 서버입니다. Claude가 네이버 블로그에 글을 작성하고 관리할 수 있도록 합니다.
+Playwright 기반 네이버 블로그 자동화를 위한 Model Context Protocol (MCP) 서버입니다. Codex 같은 MCP 클라이언트가 네이버 블로그에 글을 작성하고 관리할 수 있도록 합니다.
 
 ## 📋 프로젝트 개요
 
-네이버 블로그의 공식 API가 2020년에 종료됨에 따라, Playwright 웹 브라우저 자동화를 활용하여 MCP (Model Context Protocol) 서버를 구현합니다. AI 어시스턴트(Claude 등)가 네이버 블로그에 글을 작성할 수 있도록 지원합니다.
+네이버 블로그의 공식 API가 2020년에 종료됨에 따라, Playwright 웹 브라우저 자동화를 활용하여 MCP (Model Context Protocol) 서버를 구현합니다. AI 어시스턴트가 네이버 블로그에 글을 작성할 수 있도록 지원합니다.
 
 ## ✨ 주요 기능
 
 - ✅ **네이버 로그인 자동화** (세션 저장/재사용)
-- ✅ **MCP 서버 구현** (Claude Desktop 연동)
+- ✅ **MCP 서버 구현** (Codex STDIO MCP 연동)
+- ✅ **Codex 친화적 지연 초기화** (서버 시작 시 도구 목록 먼저 노출, 첫 도구 호출 때 로그인)
 - ✅ **네이버 블로그 글 작성** (제목, 본문, 발행)
 - ✅ **이미지 업로드** (파일/Base64, 단일/다중, 7개 포맷 지원)
 - ✅ **에러 처리 및 재시도** (네트워크 에러 자동 복구, UI 변경 대응)
-- ✅ **디버깅 도구** (Playwright Trace, 자동 스크린샷)
+- ✅ **디버깅 도구** (옵션으로만 Playwright Trace/스크린샷 저장)
 - ✅ **카테고리 조회** (블로그 카테고리 목록)
 
 ## 🛠️ 기술 스택
@@ -62,8 +63,8 @@ cp .env.example .env
 
 ```env
 # 네이버 블로그 계정 정보
-NAVER_BLOG_ID=your_naver_id
-NAVER_BLOG_PASSWORD=your_password
+NAVER_BLOG_ID=
+NAVER_BLOG_PASSWORD=
 
 # Playwright 설정
 HEADLESS=false  # 디버깅 시 false로 설정
@@ -71,35 +72,43 @@ SLOW_MO=100     # 액션 사이 딜레이 (ms)
 
 # 로깅 레벨
 LOG_LEVEL=INFO
+IMAGE_UPLOAD_ALLOWED_DIRS=blog-images
+SAVE_DEBUG_ARTIFACTS=false
 ```
 
 ## 🚀 사용 방법
 
-### 방법 1: Claude Desktop과 연동 (권장)
+### 방법 1: Codex와 연동 (권장)
 
-Claude Desktop 설정 파일(`claude_desktop_config.json`)에 다음 추가:
+Codex 설정 파일(`~/.codex/config.toml`)에 다음을 추가합니다. `cwd`는 이 저장소의 절대 경로로 바꾸세요.
 
-```json
-{
-  "mcpServers": {
-    "naver-blog": {
-      "command": "uv",
-      "args": ["run", "naver-blog-mcp"],
-      "cwd": "C:\\workdir\\space-cap\\naver-blog-mcp",
-      "env": {
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
-}
+```toml
+[mcp_servers."naver-blog"]
+command = "uv"
+args = ["run", "naver-blog-mcp"]
+cwd = "/absolute/path/to/naver-blog-mcp-codex"
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+default_tools_approval_mode = "prompt"
+enabled_tools = ["naver_blog_create_post", "naver_blog_list_categories"]
+
+[mcp_servers."naver-blog".env]
+PYTHONIOENCODING = "utf-8"
+HEADLESS = "false"
+SLOW_MO = "100"
+LOG_LEVEL = "INFO"
+IMAGE_UPLOAD_ALLOWED_DIRS = "blog-images"
+SAVE_DEBUG_ARTIFACTS = "false"
 ```
 
-Claude Desktop 재시작 후 다음과 같이 사용:
+네이버 계정 정보는 `~/.codex/config.toml`이 아니라 저장소 루트의 `.env` 파일에 넣으세요. 같은 예시는 [`codex_mcp_config.example.toml`](codex_mcp_config.example.toml)에 있습니다. Codex 재시작 후 `/mcp`에서 `naver-blog`가 표시되는지 확인합니다.
+
+Codex에서 다음과 같이 사용할 수 있습니다:
 
 ```
 네이버 블로그에 글을 작성해줘.
 제목: MCP 테스트
-내용: Claude가 작성한 첫 번째 글!
+내용: Codex가 MCP 서버로 작성한 첫 번째 글!
 ```
 
 ### 방법 2: 직접 실행
@@ -108,6 +117,8 @@ Claude Desktop 재시작 후 다음과 같이 사용:
 # MCP 서버 실행
 uv run naver-blog-mcp
 ```
+
+직접 실행은 STDIO MCP 서버를 띄우는 명령입니다. 터미널에서 단독 실행하면 입력을 기다리므로, 일반적으로 Codex 같은 MCP 클라이언트가 실행하도록 설정합니다.
 
 ### 방법 3: 테스트 스크립트
 
@@ -176,7 +187,7 @@ Phase 3 (Week 4):   ░░░░░░░░░░░░░░  0%
   - 7개 포맷 지원 (JPG, PNG, GIF, BMP, HEIC, HEIF, WebP)
   - 10MB 크기 제한, 자동 에러 처리
 - ✅ **Day 13**: 카테고리 목록 조회 및 MCP 서버 연동
-  - Claude Desktop 연동 문서 작성
+  - Codex MCP 연동 문서 작성
   - MCP 서버 인코딩 오류 수정
   - 카테고리 목록 조회 기능 완전 구현
 
@@ -195,10 +206,8 @@ Phase 3 (Week 4):   ░░░░░░░░░░░░░░  0%
 **파라미터:**
 - `title` (필수): 글 제목
 - `content` (필수): 글 본문
-- `category` (선택): 카테고리 이름
-- `tags` (선택): 태그 배열
-- `images` (선택): 이미지 파일 경로 배열
-- `publish` (선택): 즉시 발행 여부 (기본: true)
+- `images` (선택): 이미지 파일 경로 배열. 기본적으로 `blog-images/` 안 파일만 허용
+- `publish` (선택): 즉시 발행 여부 (기본: true, false면 임시저장)
 
 ### 2. `naver_blog_list_categories`
 블로그의 카테고리 목록을 조회합니다.
@@ -265,9 +274,9 @@ SLOW_MO=500 uv run python tests/test_post_write.py
 ## 📚 문서
 
 ### 사용자용
-- **[배포 가이드](docs/deployment-guide.md)** - 설치 및 배포 완전 가이드 ⭐
+- **[쉬운 사용 설명서](docs/easy-start-guide.md)** - 일반 사용자용 처음 설정 가이드
+- **[Codex MCP 설정 가이드](docs/codex-guide.md)** - Codex 연동
 - [설치 가이드](docs/installation-guide.md) - 상세 설치 방법
-- [Claude Desktop 가이드](docs/claude-desktop-guide.md) - Claude Desktop 연동
 - [사용자 가이드](docs/user-guide.md) - 사용 방법 및 예제
 
 ### 개발자용
@@ -279,7 +288,7 @@ SLOW_MO=500 uv run python tests/test_post_write.py
 
 ### 예시 1: 간단한 글 작성
 
-Claude에게 다음과 같이 요청:
+Codex에게 다음과 같이 요청:
 
 ```
 네이버 블로그에 글을 써줘.
@@ -322,7 +331,3 @@ MIT License
 ## 📞 문의
 
 GitHub Issues를 통해 문의해주세요.
-
----
-
-**🤖 Generated with [Claude Code](https://claude.com/claude-code)**

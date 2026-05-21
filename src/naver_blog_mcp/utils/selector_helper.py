@@ -152,12 +152,13 @@ async def wait_for_any_selector(
     # 각 셀렉터에 대해 비동기로 대기
     tasks = []
     for selector in selectors:
+
         async def wait_for_selector(sel):
             try:
                 locator = page.locator(sel)
                 await locator.wait_for(state=state, timeout=timeout)
                 return locator.first
-            except:
+            except Exception:
                 return None
 
         tasks.append(wait_for_selector(selector))

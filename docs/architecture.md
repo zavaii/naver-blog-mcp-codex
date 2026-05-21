@@ -541,7 +541,7 @@ async def reuse_session(browser):
 ```bash
 # .env
 NAVER_BLOG_ID=your_naver_id
-NAVER_BLOG_PASSWORD=your_password
+NAVER_BLOG_PASSWORD=
 
 # 선택사항
 HEADLESS=false  # 디버깅용
@@ -789,7 +789,7 @@ playwright install chromium
       ],
       "env": {
         "NAVER_BLOG_ID": "your_blog_id",
-        "NAVER_BLOG_PASSWORD": "your_password",
+        "NAVER_BLOG_PASSWORD": "",
         "HEADLESS": "true"
       }
     }

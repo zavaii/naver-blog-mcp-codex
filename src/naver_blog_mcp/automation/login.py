@@ -1,12 +1,15 @@
 """네이버 로그인 자동화."""
 
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import Page, BrowserContext, TimeoutError as PlaywrightTimeout
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from .selectors import LOGIN_ID_INPUT, LOGIN_PW_INPUT, LOGIN_BTN
+
+logger = logging.getLogger(__name__)
 
 
 class NaverLoginError(Exception):
@@ -122,7 +125,7 @@ async def login_to_naver(
 
         # 6. 세션 저장
         Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
-        storage_state = await page.context.storage_state(path=storage_state_path)
+        await page.context.storage_state(path=storage_state_path)
 
         # 7. 블로그 페이지로 이동하여 로그인 확인
         await page.goto("https://blog.naver.com", wait_until="load")

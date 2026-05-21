@@ -3,9 +3,8 @@
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from playwright.async_api import Page, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import (
     ElementNotFoundError,
@@ -22,7 +21,7 @@ async def handle_playwright_error(
     error: Exception,
     page: Page,
     context: str = "unknown",
-    save_screenshot: bool = True,
+    save_screenshot: bool = False,
 ) -> Exception:
     """
     Playwright 에러를 커스텀 에러로 변환하고 스크린샷을 저장합니다.

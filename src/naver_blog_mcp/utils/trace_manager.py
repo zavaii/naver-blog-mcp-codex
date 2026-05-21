@@ -21,7 +21,6 @@ class TraceManager:
             traces_dir: Trace 파일 저장 디렉토리
         """
         self.traces_dir = Path(traces_dir)
-        self.traces_dir.mkdir(parents=True, exist_ok=True)
         self.is_tracing = False
         self.current_trace_name: Optional[str] = None
 
@@ -83,6 +82,7 @@ class TraceManager:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             status = "success" if success else "error"
             filename = f"{self.current_trace_name}_{status}_{timestamp}.zip"
+            self.traces_dir.mkdir(parents=True, exist_ok=True)
             filepath = self.traces_dir / filename
 
             # Trace 저장

@@ -13,6 +13,7 @@ from typing import Optional, Union, List
 
 from playwright.async_api import Page, Frame, TimeoutError as PlaywrightTimeoutError
 
+from ..config import get_allowed_image_dirs
 from ..utils.exceptions import (
     UploadError,
     ElementNotFoundError,
@@ -38,6 +39,28 @@ UPLOADED_IMAGE_SELECTORS = [
     ".se-component-content img",
     "img[data-type='img']",
 ]
+
+
+def validate_image_path_allowed(image_path: Path) -> Path:
+    """이미지 경로가 업로드 허용 디렉터리 안에 있는지 검증합니다."""
+    resolved_path = image_path.expanduser().resolve()
+    allowed_dirs = get_allowed_image_dirs()
+
+    for allowed_dir in allowed_dirs:
+        try:
+            resolved_path.relative_to(allowed_dir)
+            return resolved_path
+        except ValueError:
+            continue
+
+    allowed_text = ", ".join(str(path) for path in allowed_dirs)
+    raise UploadError(
+        "Image path is outside allowed upload directories",
+        details={
+            "path": str(resolved_path),
+            "allowed_dirs": allowed_text,
+        },
+    )
 
 
 async def get_editor_frame(page: Page) -> Frame:
@@ -165,6 +188,7 @@ async def upload_image(
     page: Page,
     image_path: Union[str, Path],
     wait_for_complete: bool = True,
+    allow_unrestricted_path: bool = False,
 ) -> dict:
     """단일 이미지를 업로드합니다.
 
@@ -186,6 +210,11 @@ async def upload_image(
     try:
         # 경로 검증
         image_path = Path(image_path)
+        if not allow_unrestricted_path:
+            image_path = validate_image_path_allowed(image_path)
+        else:
+            image_path = image_path.expanduser().resolve()
+
         if not image_path.exists():
             raise UploadError(
                 f"Image file not found: {image_path}",
@@ -201,7 +230,16 @@ async def upload_image(
             )
 
         # 포맷 검증
-        supported_formats = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.heic', '.heif', '.webp']
+        supported_formats = [
+            ".jpg",
+            ".jpeg",
+            ".png",
+            ".gif",
+            ".bmp",
+            ".heic",
+            ".heif",
+            ".webp",
+        ]
         if image_path.suffix.lower() not in supported_formats:
             raise UploadError(
                 f"Unsupported image format: {image_path.suffix}",
@@ -220,7 +258,7 @@ async def upload_image(
                 count = await frame.locator(selector).count()
                 if count > initial_image_count:
                     initial_image_count = count
-            except:
+            except Exception:
                 pass
 
         # 이미지 버튼 클릭
@@ -254,7 +292,7 @@ async def upload_image(
             "message": f"Image uploaded successfully: {image_path.name}",
         }
 
-    except (UploadError, ElementNotFoundError, TimeoutError) as e:
+    except (UploadError, ElementNotFoundError, TimeoutError):
         # 커스텀 에러는 그대로 전달
         raise
 
@@ -342,7 +380,12 @@ async def upload_base64_image(
         logger.info(f"Base64 image saved to temporary file: {temp_path}")
 
         # 일반 이미지 업로드 사용
-        result = await upload_image(page, temp_path, wait_for_complete)
+        result = await upload_image(
+            page,
+            temp_path,
+            wait_for_complete,
+            allow_unrestricted_path=True,
+        )
 
         # 결과 수정 (임시 파일 경로 대신 원래 파일명 사용)
         result["file"] = filename
@@ -350,7 +393,7 @@ async def upload_base64_image(
 
         return result
 
-    except (UploadError, ElementNotFoundError, TimeoutError) as e:
+    except (UploadError, ElementNotFoundError, TimeoutError):
         raise
 
     except Exception as e:

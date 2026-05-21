@@ -872,7 +872,7 @@ uv build
       ],
       "env": {
         "NAVER_BLOG_ID": "your_id",
-        "NAVER_BLOG_PASSWORD": "your_password",
+        "NAVER_BLOG_PASSWORD": "",
         "HEADLESS": "true"
       }
     }

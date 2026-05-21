@@ -7,6 +7,7 @@
 
 import asyncio
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -17,12 +18,9 @@ from playwright.async_api import async_playwright
 project_root = Path(__file__).parent.parent
 load_dotenv(project_root / ".env")
 
-# 임포트 경로 추가
-import sys
-
 sys.path.insert(0, str(project_root / "src"))
 
-from naver_blog_mcp.automation.post_actions import (
+from naver_blog_mcp.automation.post_actions import (  # noqa: E402
     create_blog_post,
     navigate_to_post_write_page,
     fill_post_title,
@@ -30,7 +28,7 @@ from naver_blog_mcp.automation.post_actions import (
     publish_post,
     NaverBlogPostError,
 )
-from naver_blog_mcp.services.session_manager import SessionManager
+from naver_blog_mcp.services.session_manager import SessionManager  # noqa: E402
 
 
 async def test_post_write_full():
@@ -96,7 +94,7 @@ async def test_post_write_full():
                 title=test_title,
                 content=test_content,
                 use_html=False,  # 텍스트 모드
-                wait_for_completion=True,
+                publish=True,
             )
 
             print(f"\n✅ {result['message']}")
@@ -114,7 +112,7 @@ async def test_post_write_full():
             try:
                 await page.screenshot(path="playwright-state/error_post_write.png")
                 print("   에러 스크린샷 저장: playwright-state/error_post_write.png")
-            except:
+            except Exception:
                 pass
 
         except Exception as e:

@@ -1,0 +1,16 @@
+[mcp_servers."naver-blog"]
+command = "uv"
+args = ["run", "naver-blog-mcp"]
+cwd = "/absolute/path/to/naver-blog-mcp-codex"
+startup_timeout_sec = 30
+tool_timeout_sec = 300
+default_tools_approval_mode = "prompt"
+enabled_tools = ["naver_blog_create_post", "naver_blog_list_categories"]
+
+[mcp_servers."naver-blog".env]
+PYTHONIOENCODING = "utf-8"
+HEADLESS = "false"
+SLOW_MO = "100"
+LOG_LEVEL = "INFO"
+IMAGE_UPLOAD_ALLOWED_DIRS = "blog-images"
+SAVE_DEBUG_ARTIFACTS = "false"

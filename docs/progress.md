@@ -623,7 +623,7 @@ await file_input.set_input_files("path/to/image.jpg")
   - Playwright 브라우저 설치
   - 로컬 테스트 방법
   - 문제 해결 가이드
-- ✅ **Claude Desktop 설정 가이드** (`docs/claude-desktop-guide.md`)
+- ✅ **Codex MCP 설정 가이드** (`docs/codex-guide.md`)
   - Windows/macOS/Linux 설정 방법
   - 플랫폼별 config 파일 위치
   - JSON 설정 예제
@@ -771,7 +771,7 @@ await file_input.set_input_files("path/to/image.jpg")
 
 ### 7. 생성/수정 파일
 - 생성: `docs/installation-guide.md`
-- 생성: `docs/claude-desktop-guide.md`
+- 생성: `docs/codex-guide.md`
 - 생성: `docs/delete-post-research.md`
 - 생성: `docs/category-list-research.md`
 - 생성: `docs/feature-priority-analysis.md`

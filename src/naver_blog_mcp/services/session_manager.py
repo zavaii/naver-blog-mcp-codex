@@ -1,6 +1,5 @@
 """네이버 블로그 세션 관리자."""
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional

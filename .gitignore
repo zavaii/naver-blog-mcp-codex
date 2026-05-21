@@ -30,6 +30,10 @@ auth.json
 *.session
 credentials.json
 
+# 사용자가 업로드할 로컬 이미지
+blog-images/*
+!blog-images/.gitkeep
+
 # IDE 설정
 .vscode/
 .idea/

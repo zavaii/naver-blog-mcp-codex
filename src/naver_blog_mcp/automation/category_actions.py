@@ -2,10 +2,9 @@
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from playwright.async_api import Page
 
-from ..utils.exceptions import NaverBlogError
 from ..utils.error_handler import handle_playwright_error
 
 logger = logging.getLogger(__name__)
@@ -66,7 +65,15 @@ async def get_categories(
                 blog_id = app_config.NAVER_BLOG_ID
                 logger.info(f"config에서 blog_id 가져옴: {blog_id}")
 
-        blog_url = f"https://blog.naver.com/{blog_id}"
+        safe_blog_id = str(blog_id).strip().strip("/")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", safe_blog_id):
+            return {
+                "success": False,
+                "message": "유효하지 않은 블로그 아이디입니다",
+                "categories": [],
+            }
+
+        blog_url = f"https://blog.naver.com/{safe_blog_id}"
         await page.goto(blog_url, wait_until="networkidle")
         logger.info(f"블로그 페이지 접근: {blog_url}")
 

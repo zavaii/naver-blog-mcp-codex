@@ -1,5 +1,4 @@
-def main():
-    print("Hello from naver-blog-mcp!")
+from naver_blog_mcp.server import main
 
 
 if __name__ == "__main__":

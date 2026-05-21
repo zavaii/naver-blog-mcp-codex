@@ -1,6 +1,5 @@
 """MCP 서버의 도구 목록 노출 테스트 스크립트."""
 import asyncio
-import json
 import sys
 import os
 
@@ -45,7 +44,7 @@ async def test_mcp_tools():
                 for i, tool in enumerate(tools.tools, 1):
                     print(f"\n[도구 {i}] {tool.name}")
                     print(f"설명: {tool.description}")
-                    print(f"\n파라미터:")
+                    print("\n파라미터:")
 
                     if hasattr(tool, 'inputSchema') and tool.inputSchema:
                         schema = tool.inputSchema

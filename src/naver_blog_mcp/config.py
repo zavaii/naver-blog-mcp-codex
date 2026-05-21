@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -24,12 +23,20 @@ class Config:
 
     # 로깅 설정
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
+    SAVE_DEBUG_ARTIFACTS: bool = (
+        os.getenv("SAVE_DEBUG_ARTIFACTS", "false").lower() == "true"
+    )
 
     # 세션 설정
     SESSION_STORAGE_PATH: str = os.getenv(
         "SESSION_STORAGE_PATH", "playwright-state/auth.json"
     )
     SESSION_VALIDITY_HOURS: int = int(os.getenv("SESSION_VALIDITY_HOURS", "24"))
+    IMAGE_UPLOAD_ALLOWED_DIRS: list[str] = [
+        path.strip()
+        for path in os.getenv("IMAGE_UPLOAD_ALLOWED_DIRS", "blog-images").split(",")
+        if path.strip()
+    ]
 
     # Playwright 브라우저 설정
     BROWSER_ARGS: list[str] = [
@@ -86,3 +93,14 @@ def get_browser_config() -> dict:
 def get_context_config() -> dict:
     """Playwright 컨텍스트 설정을 반환합니다."""
     return config.get_context_config()
+
+
+def get_allowed_image_dirs() -> list[Path]:
+    """이미지 업로드 허용 디렉터리의 절대 경로 목록을 반환합니다."""
+    allowed_dirs = []
+    for raw_path in config.IMAGE_UPLOAD_ALLOWED_DIRS:
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute():
+            path = project_root / path
+        allowed_dirs.append(path.resolve())
+    return allowed_dirs

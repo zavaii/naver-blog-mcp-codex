@@ -1,13 +1,18 @@
 """MCP 서버 통합 테스트."""
 
 import asyncio
-import json
+import os
 import sys
 
 sys.path.insert(0, "src")
 
 from naver_blog_mcp.server import NaverBlogMCPServer
 from naver_blog_mcp.mcp.tools import TOOLS_METADATA
+
+
+def has_naver_credentials() -> bool:
+    """실제 네이버 로그인 테스트 실행 가능 여부를 반환합니다."""
+    return bool(os.getenv("NAVER_BLOG_ID") and os.getenv("NAVER_BLOG_PASSWORD"))
 
 
 async def test_server_tools_registration():
@@ -17,7 +22,7 @@ async def test_server_tools_registration():
     print("=" * 60)
     print()
 
-    server = NaverBlogMCPServer()
+    NaverBlogMCPServer()
     print("✅ 서버 인스턴스 생성 완료")
     print()
 
@@ -27,8 +32,8 @@ async def test_server_tools_registration():
     for tool_name, tool_meta in TOOLS_METADATA.items():
         print(f"\n🔧 {tool_name}")
         print(f"   설명: {tool_meta['description']}")
-        required = tool_meta['input_schema'].get('required', [])
-        properties = tool_meta['input_schema'].get('properties', {})
+        required = tool_meta["inputSchema"].get("required", [])
+        properties = tool_meta["inputSchema"].get("properties", {})
         if required:
             print(f"   필수 파라미터: {', '.join(required)}")
         if properties:
@@ -46,7 +51,6 @@ async def test_server_tools_registration():
     # 예상 Tool 확인
     expected_tools = [
         "naver_blog_create_post",
-        "naver_blog_delete_post",
         "naver_blog_list_categories",
     ]
 
@@ -55,7 +59,7 @@ async def test_server_tools_registration():
         print(f"❌ 누락된 Tool: {', '.join(missing_tools)}")
         return False
     else:
-        print(f"✅ 모든 예상 Tool이 등록되었습니다")
+        print("✅ 모든 예상 Tool이 등록되었습니다")
         print()
 
     return True
@@ -71,6 +75,10 @@ async def test_server_initialization():
     server = NaverBlogMCPServer()
     print("✅ 서버 인스턴스 생성 완료")
 
+    if not has_naver_credentials():
+        print("⏭️ NAVER_BLOG_ID/PASSWORD가 없어 실제 브라우저 초기화 테스트를 건너뜁니다.")
+        return True
+
     try:
         # 브라우저 초기화
         await server.initialize()
@@ -78,7 +86,7 @@ async def test_server_initialization():
 
         # 페이지 가져오기
         page = await server.get_page()
-        print(f"✅ 페이지 생성 완료")
+        print("✅ 페이지 생성 완료")
 
         # 간단한 네비게이션 테스트
         await page.goto("https://blog.naver.com")
@@ -113,7 +121,7 @@ async def test_tool_schema_validation():
         print(f"🔍 {tool_name} 검증 중...")
 
         # 필수 필드 확인
-        required_fields = ["name", "description", "input_schema"]
+        required_fields = ["name", "description", "inputSchema"]
         for field in required_fields:
             if field not in tool_meta:
                 print(f"   ❌ 누락된 필드: {field}")
@@ -121,19 +129,19 @@ async def test_tool_schema_validation():
             else:
                 print(f"   ✅ {field}: OK")
 
-        # input_schema 구조 확인
-        schema = tool_meta.get("input_schema", {})
+        # inputSchema 구조 확인
+        schema = tool_meta.get("inputSchema", {})
         if "type" not in schema:
-            print(f"   ❌ input_schema에 type 필드 누락")
+            print("   ❌ inputSchema에 type 필드 누락")
             all_valid = False
         elif schema["type"] != "object":
-            print(f"   ❌ input_schema type이 'object'가 아님: {schema['type']}")
+            print(f"   ❌ inputSchema type이 'object'가 아님: {schema['type']}")
             all_valid = False
         else:
-            print(f"   ✅ input_schema type: object")
+            print("   ✅ inputSchema type: object")
 
         if "properties" not in schema:
-            print(f"   ❌ input_schema에 properties 필드 누락")
+            print("   ❌ inputSchema에 properties 필드 누락")
             all_valid = False
         else:
             print(f"   ✅ properties: {len(schema['properties'])}개 파라미터")
