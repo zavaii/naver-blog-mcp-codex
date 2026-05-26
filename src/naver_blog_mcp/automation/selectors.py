@@ -37,9 +37,11 @@ class NaverSelectors:
         ],
         "content_frame": ["iframe.se-iframe", "iframe#mainFrame"],
         "content_body": [
+            "div.se-section-text.se-l-default",  # 본문 텍스트 섹션
+            "div.se-section-text:not(.se-title-text)",
+            ".se-text-paragraph:not(.se-title-text .se-text-paragraph)",
             "div[contenteditable='true']",  # 일반 contenteditable
             ".se-component-content",
-            ".se-text-paragraph",
         ],
         "category_select": [".blog2_series", "select[name='category']"],
         "tag_input": ["input[placeholder*='태그']", ".tag_input"],

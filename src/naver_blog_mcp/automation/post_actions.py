@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
-from .image_upload import upload_images
+from .image_upload import get_editor_frame, upload_image, upload_images
 from .selectors import (
     POST_WRITE_TITLE,
     POST_WRITE_CONTENT_FRAME,
@@ -21,12 +21,434 @@ from ..config import config
 logger = logging.getLogger(__name__)
 
 BLOG_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+MARKDOWN_IMAGE_LINE_PATTERN = re.compile(r"^\s*!\[[^\]]*\]\([^)]+\)\s*$")
+DRAFT_RESTORE_DISMISS_TEXTS = [
+    "취소",
+    "새 글쓰기",
+    "새글쓰기",
+    "새 글 작성",
+    "새로 작성",
+    "닫기",
+    "아니오",
+]
 
 
 class NaverBlogPostError(Exception):
     """네이버 블로그 글쓰기 관련 에러."""
 
     pass
+
+
+def has_markdown_image_markers(content: str) -> bool:
+    """본문 안에 마크다운 이미지 줄이 있는지 확인합니다."""
+    return any(
+        MARKDOWN_IMAGE_LINE_PATTERN.match(line.strip())
+        for line in content.splitlines()
+    )
+
+
+def is_existing_draft_prompt_text(text: str) -> bool:
+    """SmartEditor의 기존 임시글 복원 안내 문구인지 판별합니다."""
+    normalized = re.sub(r"\s+", "", text or "")
+
+    return (
+        (
+            (
+                "작성중인글이있습니다" in normalized
+                or "임시저장글이있습니다" in normalized
+                or "임시저장된글이있습니다" in normalized
+            )
+            and (
+                "이어서작성하시겠습니까" in normalized
+                or "이어작성하시겠습니까" in normalized
+                or "불러오시겠습니까" in normalized
+                or "복원하시겠습니까" in normalized
+            )
+        )
+        or "작성중인글이있습니다.이어서작성하시겠습니까?" in normalized
+        or "임시저장글이있습니다.이어서작성하시겠습니까?" in normalized
+    )
+
+
+def _normalize_button_text(text: Optional[str]) -> str:
+    """버튼 텍스트 비교용 정규화."""
+    return re.sub(r"\s+", "", text or "")
+
+
+def _may_be_draft_restore_text(text: str) -> bool:
+    """확인 버튼 클릭을 피해야 하는 임시글 관련 문구인지 넓게 판별합니다."""
+    normalized = _normalize_button_text(text)
+    return (
+        ("작성중인글" in normalized and "이어서" in normalized)
+        or (
+            "임시저장" in normalized
+            and (
+                "이어서" in normalized
+                or "불러오" in normalized
+                or "복원" in normalized
+                or "하시겠습니까" in normalized
+            )
+        )
+    )
+
+
+async def _frame_body_text(frame) -> str:
+    """접근 가능한 frame의 body 텍스트를 읽습니다."""
+    try:
+        return await frame.locator("body").inner_text(timeout=1000)
+    except Exception:
+        return ""
+
+
+async def _click_first_visible_text(frame, texts: list[str]) -> bool:
+    """프레임 안에서 텍스트가 정확히 일치하는 visible 버튼/링크를 클릭합니다."""
+    target_texts = {_normalize_button_text(text) for text in texts}
+    locator = frame.locator("button:visible, a:visible, [role='button']:visible")
+
+    try:
+        count = await locator.count()
+    except Exception:
+        return False
+
+    for index in range(count):
+        candidate = locator.nth(index)
+        try:
+            visible = await candidate.is_visible()
+            if not visible:
+                continue
+
+            label = await candidate.get_attribute("aria-label")
+            if _normalize_button_text(label) in target_texts:
+                await candidate.click(timeout=1500)
+                return True
+
+            text = await candidate.inner_text(timeout=500)
+            if _normalize_button_text(text) in target_texts:
+                await candidate.click(timeout=1500)
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+async def dismiss_existing_draft_prompt(
+    page: Page,
+    timeout: int = 5000,
+) -> bool:
+    """기존 임시글 복원 팝업이 있으면 새 글 작성을 유지하도록 닫습니다.
+
+    네이버 SmartEditor의 "임시저장글이 있습니다" 팝업에서 "확인"은 기존
+    임시글을 불러오는 동작입니다. 자동화가 이 버튼을 누르면 이전 글과 새
+    글이 섞이므로, 복원 계열 버튼은 누르지 않고 취소/닫기 계열만 사용합니다.
+    """
+    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+    saw_prompt = False
+
+    while asyncio.get_running_loop().time() < deadline:
+        for frame in page.frames:
+            text = await _frame_body_text(frame)
+            if not is_existing_draft_prompt_text(text):
+                continue
+
+            saw_prompt = True
+            logger.info("기존 임시글 복원 팝업 감지: 새 글 작성으로 닫기 시도")
+
+            if await _click_first_visible_text(frame, DRAFT_RESTORE_DISMISS_TEXTS):
+                await asyncio.sleep(0.8)
+            else:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(0.8)
+
+            remaining_text = await _frame_body_text(frame)
+            if not is_existing_draft_prompt_text(remaining_text):
+                logger.info("기존 임시글 복원 팝업 닫기 완료")
+                return True
+
+        if not saw_prompt:
+            await asyncio.sleep(0.25)
+        else:
+            await asyncio.sleep(0.5)
+
+    if saw_prompt:
+        raise NaverBlogPostError(
+            "기존 임시글 복원 팝업을 닫지 못했습니다. "
+            "기존 임시글을 불러오면 새 글 내용이 섞일 수 있어 중단합니다."
+        )
+
+    return False
+
+
+async def close_editor_popups(
+    page: Page,
+    allow_confirm: bool = False,
+    timeout: int = 1500,
+) -> None:
+    """에디터 진행을 막는 일반 팝업을 닫습니다."""
+    await dismiss_existing_draft_prompt(page, timeout=timeout)
+
+    close_selectors = [
+        "button[aria-label='닫기']:visible",
+        ".se-popup-button-close:visible",
+        "button.se-popup-close:visible",
+        ".se-help-panel button:visible",
+    ]
+
+    for frame in page.frames:
+        frame_text = await _frame_body_text(frame)
+        frame_has_draft_prompt = is_existing_draft_prompt_text(frame_text)
+        close_texts = ["취소", "닫기"]
+        if allow_confirm and not _may_be_draft_restore_text(frame_text):
+            close_texts.append("확인")
+
+        for selector in close_selectors:
+            try:
+                locator = frame.locator(selector)
+                count = await locator.count()
+                if count > 0:
+                    await locator.last.click(timeout=1000)
+                    await asyncio.sleep(0.2)
+                    break
+            except Exception:
+                continue
+
+        if frame_has_draft_prompt:
+            continue
+
+        await _click_first_visible_text(frame, close_texts)
+
+
+def split_content_by_image_markers(content: str) -> list[tuple[str, str]]:
+    """마크다운 이미지 줄을 기준으로 본문을 텍스트/이미지 블록으로 나눕니다."""
+    blocks: list[tuple[str, str]] = []
+    text_buffer: list[str] = []
+
+    for line in content.splitlines(keepends=True):
+        if MARKDOWN_IMAGE_LINE_PATTERN.match(line.strip()):
+            if text_buffer or not blocks:
+                blocks.append(("text", "".join(text_buffer)))
+                text_buffer = []
+            blocks.append(("image", line.strip()))
+            continue
+        text_buffer.append(line)
+
+    if text_buffer or not blocks:
+        blocks.append(("text", "".join(text_buffer)))
+
+    return blocks
+
+
+def replace_image_markers_with_placeholders(
+    content: str,
+) -> tuple[str, list[str]]:
+    """마크다운 이미지 줄을 안정적으로 치환 가능한 자리표시자로 바꿉니다."""
+    placeholders: list[str] = []
+    output_lines: list[str] = []
+
+    for line in content.splitlines(keepends=True):
+        if MARKDOWN_IMAGE_LINE_PATTERN.match(line.strip()):
+            token = f"[[NAVER_IMAGE_{len(placeholders) + 1:03d}]]"
+            line_ending = "\n" if line.endswith("\n") else ""
+            output_lines.append(f"{token}{line_ending}")
+            placeholders.append(token)
+            continue
+        output_lines.append(line)
+
+    return "".join(output_lines), placeholders
+
+
+async def insert_editor_text(page: Page, fallback_target, text: str) -> None:
+    """현재 포커스된 에디터에 텍스트를 삽입합니다.
+
+    keyboard.type()은 SmartEditor의 자동 번호목록 변환을 쉽게 건드립니다.
+    insert_text()를 줄 단위로 사용하고 Enter로 문단을 만들어, 원문 번호
+    중복과 줄바꿈 붕괴를 함께 줄입니다.
+    """
+    if not text:
+        return
+
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        if line:
+            try:
+                await page.keyboard.insert_text(line)
+            except Exception as e:
+                logger.debug(f"insert_text 실패, 순차 타이핑으로 대체: {e}")
+                if fallback_target is not None:
+                    await fallback_target.type(line, delay=10)
+                else:
+                    await page.keyboard.type(line, delay=10)
+
+        if index < len(lines) - 1:
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.02)
+
+
+async def paste_editor_text(page: Page, fallback_target, text: str) -> None:
+    """현재 포커스된 에디터에 일반 텍스트를 붙여넣습니다."""
+    if not text:
+        return
+
+    try:
+        await page.context.grant_permissions(
+            ["clipboard-read", "clipboard-write"],
+            origin="https://blog.naver.com",
+        )
+    except Exception as e:
+        logger.debug(f"Clipboard permission grant failed (ignored): {e}")
+
+    try:
+        await page.evaluate(
+            "async (value) => navigator.clipboard.writeText(value)",
+            text,
+        )
+        await page.keyboard.press("Meta+V")
+    except Exception as e:
+        logger.debug(f"텍스트 붙여넣기 실패, 줄 단위 삽입으로 대체: {e}")
+        await insert_editor_text(page, fallback_target, text)
+
+
+async def select_editor_text(page: Page, text: str) -> bool:
+    """에디터 iframe 안에서 특정 텍스트를 찾아 선택합니다."""
+    frame = await get_editor_frame(page)
+    return await frame.evaluate(
+        """
+        (needle) => {
+            const root =
+                document.querySelector("article.se-components-wrap") ||
+                document.querySelector(".se-canvas") ||
+                document.body;
+            const walker = document.createTreeWalker(
+                root,
+                NodeFilter.SHOW_TEXT,
+            );
+
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const index = node.nodeValue.indexOf(needle);
+                if (index === -1) {
+                    continue;
+                }
+
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.setEnd(node, index + needle.length);
+
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                const parent = node.parentElement;
+                if (parent) {
+                    parent.scrollIntoView({ block: "center", inline: "nearest" });
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+        """,
+        text,
+    )
+
+
+async def delete_selected_editor_text(page: Page) -> None:
+    """현재 에디터 선택 영역을 지우고 그 위치에 커서를 남깁니다."""
+    frame = await get_editor_frame(page)
+    await frame.evaluate(
+        """
+        () => {
+            document.execCommand("delete");
+            document.dispatchEvent(new InputEvent("input", { bubbles: true }));
+        }
+        """
+    )
+
+
+async def remove_editor_text_and_place_cursor(page: Page, text: str) -> bool:
+    """텍스트 노드에서 특정 문자열을 제거하고 그 위치에 커서를 둡니다."""
+    frame = await get_editor_frame(page)
+    return await frame.evaluate(
+        """
+        (needle) => {
+            const root =
+                document.querySelector("article.se-components-wrap") ||
+                document.querySelector(".se-canvas") ||
+                document.body;
+            const walker = document.createTreeWalker(
+                root,
+                NodeFilter.SHOW_TEXT,
+            );
+
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const index = node.nodeValue.indexOf(needle);
+                if (index === -1) {
+                    continue;
+                }
+
+                node.nodeValue =
+                    node.nodeValue.slice(0, index) +
+                    node.nodeValue.slice(index + needle.length);
+
+                const range = document.createRange();
+                range.setStart(node, index);
+                range.collapse(true);
+
+                const selection = window.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+
+                const parent = node.parentElement;
+                if (parent) {
+                    parent.scrollIntoView({ block: "center", inline: "nearest" });
+                }
+
+                document.dispatchEvent(new InputEvent("input", { bubbles: true }));
+                return true;
+            }
+
+            return false;
+        }
+        """,
+        text,
+    )
+
+
+async def wait_for_editor_uploads_idle(page: Page, timeout: int = 30000) -> None:
+    """SmartEditor 이미지 업로드 상태 문구가 사라질 때까지 기다립니다."""
+    deadline = asyncio.get_running_loop().time() + (timeout / 1000)
+    idle_rounds = 0
+
+    while asyncio.get_running_loop().time() < deadline:
+        busy = False
+        for frame in page.frames:
+            try:
+                frame_busy = await frame.evaluate(
+                    """
+                    () => {
+                        const text = document.body.innerText || "";
+                        return text.includes("업로드 준비") ||
+                            text.includes("전송중") ||
+                            text.includes("업로드 중");
+                    }
+                    """
+                )
+                busy = busy or bool(frame_busy)
+            except Exception:
+                continue
+
+        if not busy:
+            idle_rounds += 1
+            if idle_rounds >= 2:
+                return
+        else:
+            idle_rounds = 0
+
+        await asyncio.sleep(1)
+
+    logger.warning("이미지 업로드 완료 대기 시간이 초과되었습니다.")
 
 
 async def navigate_to_post_write_page(
@@ -89,6 +511,7 @@ async def navigate_to_post_write_page(
 
         await page.goto(url, wait_until="load", timeout=timeout)
         await asyncio.sleep(3)  # 에디터 로딩 충분히 대기
+        await dismiss_existing_draft_prompt(page)
 
         # 글쓰기 페이지인지 확인
         current_url = page.url
@@ -142,6 +565,8 @@ async def fill_post_title(page: Page, title: str) -> None:
         NaverBlogPostError: 제목 입력 실패 시
     """
     try:
+        await dismiss_existing_draft_prompt(page, timeout=1500)
+
         # 제목 입력란 찾기 (대체 셀렉터 시도)
         title_filled = False
 
@@ -161,7 +586,9 @@ async def fill_post_title(page: Page, title: str) -> None:
                             # contenteditable div: 클릭 후 타이핑
                             await element.click()
                             await asyncio.sleep(0.3)
-                            await element.type(title, delay=50)
+                            await page.keyboard.press("Meta+A")
+                            await page.keyboard.press("Backspace")
+                            await page.keyboard.insert_text(title)
                         else:
                             # 일반 input: fill 사용
                             await element.fill(title)
@@ -220,23 +647,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         NaverBlogPostError: 본문 입력 실패 시
     """
     try:
-        # 팝업이 있으면 먼저 닫기
-        try:
-            popup_selectors = [
-                "button:has-text('확인')",
-                "button:has-text('닫기')",
-                "button.se-popup-button-confirm",
-                ".se-popup-button-confirm",
-            ]
-            for popup_selector in popup_selectors:
-                popup_count = await page.locator(popup_selector).count()
-                if popup_count > 0:
-                    await page.click(popup_selector, timeout=2000)
-                    print(f"   팝업 닫기: {popup_selector}")
-                    await asyncio.sleep(0.5)
-                    break
-        except Exception as e:
-            print(f"   팝업 확인 실패 (무시): {e}")
+        await close_editor_popups(page, allow_confirm=True)
 
         content_filled = False
 
@@ -258,24 +669,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                     iframe_found = await frame_element.content_frame()
 
                     if iframe_found:
-                        # iframe 내부 팝업 닫기
-                        try:
-                            iframe_popup_selectors = [
-                                "button:has-text('확인')",
-                                "button:has-text('닫기')",
-                                ".se-popup-button-confirm",
-                            ]
-                            for popup_sel in iframe_popup_selectors:
-                                popup_count = await iframe_found.locator(
-                                    popup_sel
-                                ).count()
-                                if popup_count > 0:
-                                    await iframe_found.locator(popup_sel).click(timeout=2000)
-                                    print(f"   iframe 내부 팝업 닫기: {popup_sel}")
-                                    await asyncio.sleep(0.5)
-                                    break
-                        except Exception as e:
-                            print(f"   iframe 팝업 닫기 실패 (무시): {e}")
+                        await close_editor_popups(page, allow_confirm=True)
 
                         # iframe 내부에서 contenteditable 찾기
                         body_selectors = (
@@ -292,7 +686,9 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                                 if content_body:
                                     await content_body.click()
                                     await asyncio.sleep(0.5)
-                                    await content_body.type(content, delay=10)
+                                    await paste_editor_text(
+                                        page, content_body, content
+                                    )
                                     content_filled = True
                                     logger.info(
                                         f"본문 입력 완료 (iframe 방식, selector: {body_selector})"
@@ -335,7 +731,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                         await asyncio.sleep(0.2)
 
                         # 본문 입력
-                        await page.keyboard.type(content, delay=10)
+                        await paste_editor_text(page, element, content)
                         content_filled = True
                         logger.info(f"본문 입력 완료 (직접 방식, selector: {selector})")
                         break
@@ -352,6 +748,53 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}")
     except Exception as e:
         raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}")
+
+
+async def fill_post_content_with_images(
+    page: Page,
+    content: str,
+    images: list[str],
+    use_html: bool = False,
+) -> int:
+    """마크다운 이미지 줄 위치에 맞춰 본문과 이미지를 순서대로 입력합니다."""
+    placeholder_content, placeholders = replace_image_markers_with_placeholders(content)
+
+    if not placeholders:
+        await fill_post_content(page, content, use_html)
+        return 0
+
+    await fill_post_content(page, placeholder_content, use_html)
+
+    images_uploaded = 0
+
+    for index, token in enumerate(placeholders):
+        if index >= len(images):
+            logger.warning(f"이미지 마커에 대응하는 이미지가 없습니다: {token}")
+            break
+
+        try:
+            if not await remove_editor_text_and_place_cursor(page, token):
+                logger.warning(f"이미지 자리표시자를 찾지 못했습니다: {token}")
+                continue
+
+            await asyncio.sleep(0.2)
+
+            image_path = images[index]
+            upload_result = await upload_image(page, image_path)
+            if upload_result.get("success"):
+                images_uploaded += 1
+            await asyncio.sleep(0.3)
+        except Exception as e:
+            image_path = images[index] if index < len(images) else token
+            logger.warning(f"이미지 인라인 업로드 실패 ({image_path}): {e}")
+
+    if len(images) > len(placeholders):
+        remaining = images[len(placeholders):]
+        logger.info(f"남은 이미지 {len(remaining)}개를 본문 끝에 업로드합니다.")
+        upload_result = await upload_images(page, remaining)
+        images_uploaded += len(upload_result.get("uploaded", []))
+
+    return images_uploaded
 
 
 async def publish_post(
@@ -389,27 +832,7 @@ async def publish_post(
         print(f"   현재 URL: {page.url}")
         print(f"   페이지 타이틀: {await page.title()}")
 
-        # 페이지 내 모든 팝업/모달 닫기 (도움말 팝업 등)
-        try:
-            # 도움말 팝업 닫기
-            popup_close_selectors = [
-                "button.se-popup-button-cancel",  # 취소 버튼
-                "button:has-text('닫기')",
-                "button:has-text('확인')",
-                "button.se-popup-close",
-                ".se-popup-dim",  # 팝업 배경 클릭
-            ]
-            for close_sel in popup_close_selectors:
-                popup_count = await page.locator(close_sel).count()
-                if popup_count > 0:
-                    try:
-                        await page.locator(close_sel).first.click(timeout=2000)
-                        print(f"   페이지 팝업 닫기: {close_sel}")
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        await close_editor_popups(page, allow_confirm=True)
 
         # 1. 발행 버튼 찾기 (대체 셀렉터 시도)
         publish_clicked = False
@@ -587,12 +1010,45 @@ async def save_draft(page: Page) -> Dict[str, Any]:
             "button:has-text('임시저장'):visible",
             "a:has-text('임시저장'):visible",
             "button[class*='temp']:visible",
+            "button[class*='save']:visible",
+            "a[class*='save']:visible",
         ]
     )
 
     try:
         await page.bring_to_front()
         await page.evaluate("() => { window.focus(); }")
+        await page.keyboard.press("Escape")
+        await asyncio.sleep(0.3)
+        await close_editor_popups(page, allow_confirm=False)
+
+        # 도움말/팝업 패널이 발행·임시저장 영역을 덮으면 버튼 탐색이 실패합니다.
+        close_selectors = [
+            "button[aria-label='닫기']:visible",
+            "button:has-text('닫기'):visible",
+            ".se-help-panel button:visible",
+            ".se-popup-button-close:visible",
+        ]
+        for frame in page.frames:
+            for selector in close_selectors:
+                try:
+                    count = await frame.locator(selector).count()
+                    if count > 0:
+                        await frame.locator(selector).last.click(timeout=1000)
+                        await asyncio.sleep(0.2)
+                        break
+                except Exception:
+                    continue
+
+        try:
+            await page.evaluate("() => window.scrollTo(0, 0)")
+        except Exception:
+            pass
+        for frame in page.frames:
+            try:
+                await frame.evaluate("() => window.scrollTo(0, 0)")
+            except Exception:
+                continue
         await asyncio.sleep(0.5)
 
         for frame in page.frames:
@@ -660,16 +1116,23 @@ async def create_blog_post(
         # 2. 제목 입력
         await fill_post_title(page, title)
 
-        # 3. 본문 입력
-        await fill_post_content(page, content, use_html)
-
-        # 4. 이미지 업로드
+        # 3. 본문 입력 및 이미지 업로드
         images_uploaded = 0
-        if images:
+        if images and has_markdown_image_markers(content):
+            images_uploaded = await fill_post_content_with_images(
+                page, content, images, use_html
+            )
+        else:
+            await fill_post_content(page, content, use_html)
+
+        # 4. 이미지 마커가 없는 기존 호출은 본문 끝에 이미지를 업로드
+        if images and not has_markdown_image_markers(content):
             upload_result = await upload_images(page, images)
             images_uploaded = len(upload_result.get("uploaded", []))
             if upload_result.get("failed"):
                 logger.warning(f"일부 이미지 업로드 실패: {upload_result['failed']}")
+
+        await wait_for_editor_uploads_idle(page)
 
         # 5. 발행 또는 임시저장
         if publish:

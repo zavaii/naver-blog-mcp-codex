@@ -10,6 +10,25 @@ from ..utils.error_handler import handle_playwright_error
 logger = logging.getLogger(__name__)
 
 
+def _extract_blog_id_from_url(url: str) -> Optional[str]:
+    """네이버 블로그 URL에서 실제 블로그 ID를 추출합니다."""
+    if "blog.naver.com" not in url:
+        return None
+
+    match = re.search(r"blogId=([^&]+)", url)
+    if match:
+        return match.group(1)
+
+    match = re.search(r"blog\.naver\.com/([^/?#]+)", url)
+    if not match:
+        return None
+
+    extracted_id = match.group(1)
+    if extracted_id in ["PostList", "MyBlog", "PostView", "postwrite"]:
+        return None
+    return extracted_id
+
+
 async def get_categories(
     page: Page,
     blog_id: Optional[str] = None
@@ -43,21 +62,26 @@ async def get_categories(
         # 1. 블로그 메인 페이지로 이동
         # blog_id가 없으면 현재 페이지의 URL에서 추출하거나 config에서 가져오기
         if not blog_id:
-            # 현재 URL에서 blog_id 추출 시도
-            current_url = page.url
-            if "blog.naver.com" in current_url:
-                # URL에서 blogId 파라미터 찾기
-                match = re.search(r'blogId=([^&]+)', current_url)
-                if match:
-                    blog_id = match.group(1)
-                else:
-                    # URL 경로에서 blogId 추출 (예: /blogid/...)
-                    match = re.search(r'blog\.naver\.com/([^/?]+)', current_url)
-                    if match:
-                        extracted_id = match.group(1)
-                        # "PostList", "MyBlog" 등의 경로가 아닌 경우에만 blog_id로 사용
-                        if extracted_id not in ["PostList", "MyBlog", "PostView"]:
-                            blog_id = extracted_id
+            blog_id = _extract_blog_id_from_url(page.url)
+
+            # 로그인 ID와 실제 블로그 주소 ID가 다른 계정이 있으므로,
+            # 네이버의 내 블로그 링크를 먼저 따라가 실제 블로그 ID를 감지합니다.
+            if not blog_id:
+                try:
+                    await page.goto(
+                        "https://blog.naver.com/MyBlog.naver",
+                        wait_until="load",
+                        timeout=10000,
+                    )
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except Exception as e:
+                        logger.debug(f"내 블로그 networkidle 대기 생략: {e}")
+                    blog_id = _extract_blog_id_from_url(page.url)
+                    if blog_id:
+                        logger.info(f"내 블로그 URL에서 blog_id 감지: {blog_id}")
+                except Exception as e:
+                    logger.warning(f"내 블로그 URL 자동 감지 실패: {e}")
 
             # 여전히 blog_id가 없으면 config에서 가져오기
             if not blog_id:
