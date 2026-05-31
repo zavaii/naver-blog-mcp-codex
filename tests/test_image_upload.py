@@ -17,7 +17,7 @@ from naver_blog_mcp.automation.image_upload import (
 
 async def create_test_images() -> list[Path]:
     """테스트용 이미지 파일을 생성합니다."""
-    test_dir = Path("playwright-state/test-images")
+    test_dir = Path("blog-images/test-images")
     test_dir.mkdir(parents=True, exist_ok=True)
 
     images = []

@@ -69,6 +69,7 @@ NAVER_BLOG_PASSWORD=
 # Playwright 설정
 HEADLESS=false  # 디버깅 시 false로 설정
 SLOW_MO=100     # 액션 사이 딜레이 (ms)
+ACTION_DELAY_SECONDS=0.8  # 글쓰기/업로드 단계 사이 추가 대기 (초)
 
 # 로깅 레벨
 LOG_LEVEL=INFO

@@ -39,11 +39,26 @@ class NaverBlogPostError(Exception):
     pass
 
 
+async def _action_pause(multiplier: float = 1.0) -> None:
+    delay = max(config.ACTION_DELAY_SECONDS * multiplier, 0)
+    if delay:
+        await asyncio.sleep(delay)
+
+
 def has_markdown_image_markers(content: str) -> bool:
     """본문 안에 마크다운 이미지 줄이 있는지 확인합니다."""
     return any(
         MARKDOWN_IMAGE_LINE_PATTERN.match(line.strip())
         for line in content.splitlines()
+    )
+
+
+def count_markdown_image_markers(content: str) -> int:
+    """본문 안의 마크다운 이미지 줄 개수를 셉니다."""
+    return sum(
+        1
+        for line in content.splitlines()
+        if MARKDOWN_IMAGE_LINE_PATTERN.match(line.strip())
     )
 
 
@@ -120,11 +135,13 @@ async def _click_first_visible_text(frame, texts: list[str]) -> bool:
             label = await candidate.get_attribute("aria-label")
             if _normalize_button_text(label) in target_texts:
                 await candidate.click(timeout=1500)
+                await _action_pause()
                 return True
 
             text = await candidate.inner_text(timeout=500)
             if _normalize_button_text(text) in target_texts:
                 await candidate.click(timeout=1500)
+                await _action_pause()
                 return True
         except Exception:
             continue
@@ -155,10 +172,10 @@ async def dismiss_existing_draft_prompt(
             logger.info("기존 임시글 복원 팝업 감지: 새 글 작성으로 닫기 시도")
 
             if await _click_first_visible_text(frame, DRAFT_RESTORE_DISMISS_TEXTS):
-                await asyncio.sleep(0.8)
+                await _action_pause()
             else:
                 await page.keyboard.press("Escape")
-                await asyncio.sleep(0.8)
+                await _action_pause()
 
             remaining_text = await _frame_body_text(frame)
             if not is_existing_draft_prompt_text(remaining_text):
@@ -166,9 +183,9 @@ async def dismiss_existing_draft_prompt(
                 return True
 
         if not saw_prompt:
-            await asyncio.sleep(0.25)
+            await _action_pause(0.35)
         else:
-            await asyncio.sleep(0.5)
+            await _action_pause(0.75)
 
     if saw_prompt:
         raise NaverBlogPostError(
@@ -207,7 +224,7 @@ async def close_editor_popups(
                 count = await locator.count()
                 if count > 0:
                     await locator.last.click(timeout=1000)
-                    await asyncio.sleep(0.2)
+                    await _action_pause(0.35)
                     break
             except Exception:
                 continue
@@ -281,7 +298,7 @@ async def insert_editor_text(page: Page, fallback_target, text: str) -> None:
 
         if index < len(lines) - 1:
             await page.keyboard.press("Enter")
-            await asyncio.sleep(0.02)
+            await _action_pause(0.1)
 
 
 async def paste_editor_text(page: Page, fallback_target, text: str) -> None:
@@ -416,14 +433,77 @@ async def remove_editor_text_and_place_cursor(page: Page, text: str) -> bool:
     )
 
 
+async def remove_unresolved_image_placeholders(page: Page) -> int:
+    """에디터에 남은 NAVER_IMAGE 자리표시자 텍스트를 모두 제거합니다."""
+    frame = await get_editor_frame(page)
+    return await frame.evaluate(
+        """
+        () => {
+            const root =
+                document.querySelector("article.se-components-wrap") ||
+                document.querySelector(".se-canvas") ||
+                document.body;
+            const pattern = /\\[\\[NAVER_IMAGE_\\d{3}\\]\\]/g;
+            const walker = document.createTreeWalker(
+                root,
+                NodeFilter.SHOW_TEXT,
+            );
+            let removed = 0;
+
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const text = node.nodeValue || "";
+                const matches = text.match(pattern);
+                if (!matches) {
+                    continue;
+                }
+                removed += matches.length;
+                node.nodeValue = text.replace(pattern, "");
+            }
+
+            if (removed > 0) {
+                document.dispatchEvent(new InputEvent("input", { bubbles: true }));
+            }
+            return removed;
+        }
+        """
+    )
+
+
+async def assert_no_unresolved_image_placeholders(page: Page) -> None:
+    """발행 전 NAVER_IMAGE 자리표시자가 남아 있으면 실패시킵니다."""
+    frame = await get_editor_frame(page)
+    remaining = await frame.evaluate(
+        """
+        () => {
+            const root =
+                document.querySelector("article.se-components-wrap") ||
+                document.querySelector(".se-canvas") ||
+                document.body;
+            const text = root.innerText || "";
+            return text.match(/\\[\\[NAVER_IMAGE_\\d{3}\\]\\]/g) || [];
+        }
+        """
+    )
+    if remaining:
+        raise NaverBlogPostError(
+            "이미지 자리표시자가 본문에 남아 있어 발행을 중단합니다: "
+            + ", ".join(remaining)
+        )
+
+
 async def wait_for_editor_uploads_idle(page: Page, timeout: int = 30000) -> None:
     """SmartEditor 이미지 업로드 상태 문구가 사라질 때까지 기다립니다."""
+    frames = getattr(page, "frames", None)
+    if frames is None:
+        return
+
     deadline = asyncio.get_running_loop().time() + (timeout / 1000)
     idle_rounds = 0
 
     while asyncio.get_running_loop().time() < deadline:
         busy = False
-        for frame in page.frames:
+        for frame in frames:
             try:
                 frame_busy = await frame.evaluate(
                     """
@@ -585,13 +665,14 @@ async def fill_post_title(page: Page, title: str) -> None:
                         if is_contenteditable:
                             # contenteditable div: 클릭 후 타이핑
                             await element.click()
-                            await asyncio.sleep(0.3)
+                            await _action_pause(0.5)
                             await page.keyboard.press("Meta+A")
                             await page.keyboard.press("Backspace")
                             await page.keyboard.insert_text(title)
                         else:
                             # 일반 input: fill 사용
                             await element.fill(title)
+                            await _action_pause()
 
                         title_filled = True
                         logger.info(f"제목 입력 완료: {title} (selector: {selector})")
@@ -605,7 +686,7 @@ async def fill_post_title(page: Page, title: str) -> None:
             try:
                 # 제목 영역 대략적인 위치 클릭 (상단 중앙)
                 await page.mouse.click(450, 250)
-                await asyncio.sleep(0.5)
+                await _action_pause(0.75)
                 await page.keyboard.type(title, delay=50)
                 title_filled = True
                 logger.info(f"제목 입력 완료 (클릭 방식): {title}")
@@ -617,7 +698,7 @@ async def fill_post_title(page: Page, title: str) -> None:
             try:
                 # 페이지 최상단으로 포커스 이동 후 Tab으로 제목까지 이동
                 await page.keyboard.press("Tab")
-                await asyncio.sleep(0.3)
+                await _action_pause(0.5)
                 await page.keyboard.type(title, delay=50)
                 title_filled = True
                 logger.info(f"제목 입력 완료 (Tab 방식): {title}")
@@ -627,7 +708,7 @@ async def fill_post_title(page: Page, title: str) -> None:
         if not title_filled:
             raise NaverBlogPostError("제목 입력란을 찾을 수 없습니다.")
 
-        await asyncio.sleep(0.5)
+        await _action_pause()
 
     except Exception as e:
         raise NaverBlogPostError(f"제목 입력 중 오류: {str(e)}")
@@ -685,7 +766,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                                 )
                                 if content_body:
                                     await content_body.click()
-                                    await asyncio.sleep(0.5)
+                                    await _action_pause(0.75)
                                     await paste_editor_text(
                                         page, content_body, content
                                     )
@@ -701,7 +782,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                         if content_filled:
                             # iframe에서 메인 페이지로 포커스 전환
                             await page.evaluate("() => { window.focus(); }")
-                            await asyncio.sleep(0.5)
+                            await _action_pause(0.75)
                             break
             except Exception:
                 continue
@@ -724,11 +805,11 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
                     if element_count > 0:
                         element = page.locator(selector).first
                         await element.click()
-                        await asyncio.sleep(0.5)
+                        await _action_pause(0.75)
 
                         # 기존 플레이스홀더 텍스트 제거
                         await page.keyboard.press("Control+A")
-                        await asyncio.sleep(0.2)
+                        await _action_pause(0.35)
 
                         # 본문 입력
                         await paste_editor_text(page, element, content)
@@ -742,7 +823,7 @@ async def fill_post_content(page: Page, content: str, use_html: bool = False) ->
         if not content_filled:
             raise NaverBlogPostError("본문 입력 영역을 찾을 수 없습니다.")
 
-        await asyncio.sleep(1)
+        await _action_pause()
 
     except PlaywrightTimeout as e:
         raise NaverBlogPostError(f"본문 입력 시간 초과: {str(e)}")
@@ -777,13 +858,13 @@ async def fill_post_content_with_images(
                 logger.warning(f"이미지 자리표시자를 찾지 못했습니다: {token}")
                 continue
 
-            await asyncio.sleep(0.2)
+            await _action_pause(0.35)
 
             image_path = images[index]
             upload_result = await upload_image(page, image_path)
             if upload_result.get("success"):
                 images_uploaded += 1
-            await asyncio.sleep(0.3)
+            await _action_pause(0.5)
         except Exception as e:
             image_path = images[index] if index < len(images) else token
             logger.warning(f"이미지 인라인 업로드 실패 ({image_path}): {e}")
@@ -793,6 +874,10 @@ async def fill_post_content_with_images(
         logger.info(f"남은 이미지 {len(remaining)}개를 본문 끝에 업로드합니다.")
         upload_result = await upload_images(page, remaining)
         images_uploaded += len(upload_result.get("uploaded", []))
+
+    removed = await remove_unresolved_image_placeholders(page)
+    if removed:
+        logger.warning(f"남은 이미지 자리표시자 {removed}개를 제거했습니다.")
 
     return images_uploaded
 
@@ -826,7 +911,7 @@ async def publish_post(
         await page.evaluate(
             "() => { if (window.parent) { window.parent.focus(); } window.focus(); }"
         )
-        await asyncio.sleep(1)
+        await _action_pause()
 
         # 페이지가 실제로 로드되었는지 확인
         print(f"   현재 URL: {page.url}")
@@ -875,7 +960,7 @@ async def publish_post(
                     help_count = await frame.locator(help_sel).count()
                     if help_count > 0:
                         await frame.locator(help_sel).first.click(timeout=2000)
-                        await asyncio.sleep(0.5)
+                        await _action_pause()
                         break
 
                 # 발행 버튼 찾기 (우선순위: 발행 > 글쓰기)
@@ -891,7 +976,7 @@ async def publish_post(
                         await element.click(timeout=5000)
                         publish_clicked = True
                         logger.info(f"발행 버튼 클릭 성공 (Frame {idx})")
-                        await asyncio.sleep(2)
+                        await _action_pause(2)
                         break
 
                 if publish_clicked:
@@ -907,7 +992,7 @@ async def publish_post(
         # 2. 발행 설정 대화상자에서 최종 "발행" 버튼 클릭
         if publish_clicked:
             try:
-                await asyncio.sleep(1)  # 대화상자 로딩 대기
+                await _action_pause()  # 대화상자 로딩 대기
 
                 # 대화상자 내 발행 버튼을 force=True로 클릭 시도
                 final_publish_clicked = False
@@ -926,7 +1011,7 @@ async def publish_post(
                                         force=True, timeout=5000
                                     )
                                     final_publish_clicked = True
-                                    await asyncio.sleep(2)
+                                    await _action_pause(2)
                                     break
                             except Exception:
                                 continue
@@ -956,7 +1041,7 @@ async def publish_post(
                                 }
                             """)
                             if 'Clicked' in result:
-                                await asyncio.sleep(3)
+                                await _action_pause(3)
                                 break
                         except Exception:
                             continue
@@ -1019,7 +1104,7 @@ async def save_draft(page: Page) -> Dict[str, Any]:
         await page.bring_to_front()
         await page.evaluate("() => { window.focus(); }")
         await page.keyboard.press("Escape")
-        await asyncio.sleep(0.3)
+        await _action_pause(0.5)
         await close_editor_popups(page, allow_confirm=False)
 
         # 도움말/팝업 패널이 발행·임시저장 영역을 덮으면 버튼 탐색이 실패합니다.
@@ -1035,7 +1120,7 @@ async def save_draft(page: Page) -> Dict[str, Any]:
                     count = await frame.locator(selector).count()
                     if count > 0:
                         await frame.locator(selector).last.click(timeout=1000)
-                        await asyncio.sleep(0.2)
+                        await _action_pause(0.35)
                         break
                 except Exception:
                     continue
@@ -1049,7 +1134,7 @@ async def save_draft(page: Page) -> Dict[str, Any]:
                 await frame.evaluate("() => window.scrollTo(0, 0)")
             except Exception:
                 continue
-        await asyncio.sleep(0.5)
+        await _action_pause()
 
         for frame in page.frames:
             for selector in temp_save_selectors:
@@ -1057,7 +1142,7 @@ async def save_draft(page: Page) -> Dict[str, Any]:
                     button = frame.locator(selector).first
                     if await button.count() > 0:
                         await button.click(timeout=5000)
-                        await asyncio.sleep(1)
+                        await _action_pause()
                         logger.info(f"임시저장 버튼 클릭 성공: {selector}")
                         return {
                             "success": True,
@@ -1112,27 +1197,47 @@ async def create_blog_post(
     try:
         # 1. 글쓰기 페이지로 이동
         await navigate_to_post_write_page(page, blog_id)
+        await _action_pause()
 
         # 2. 제목 입력
         await fill_post_title(page, title)
+        await _action_pause()
 
         # 3. 본문 입력 및 이미지 업로드
         images_uploaded = 0
-        if images and has_markdown_image_markers(content):
+        has_image_markers = has_markdown_image_markers(content)
+        may_have_image_placeholders = has_image_markers or "[[NAVER_IMAGE_" in content
+
+        if images and has_image_markers:
+            expected_inline_images = min(len(images), count_markdown_image_markers(content))
             images_uploaded = await fill_post_content_with_images(
                 page, content, images, use_html
             )
+            if images_uploaded < expected_inline_images:
+                raise NaverBlogPostError(
+                    "이미지 마커 "
+                    f"{expected_inline_images}개 중 {images_uploaded}개만 업로드되어 발행을 중단합니다."
+                )
         else:
             await fill_post_content(page, content, use_html)
+        await _action_pause()
 
         # 4. 이미지 마커가 없는 기존 호출은 본문 끝에 이미지를 업로드
-        if images and not has_markdown_image_markers(content):
+        if images and not has_image_markers:
             upload_result = await upload_images(page, images)
             images_uploaded = len(upload_result.get("uploaded", []))
             if upload_result.get("failed"):
                 logger.warning(f"일부 이미지 업로드 실패: {upload_result['failed']}")
+            await _action_pause()
 
         await wait_for_editor_uploads_idle(page)
+        if may_have_image_placeholders:
+            removed_placeholders = await remove_unresolved_image_placeholders(page)
+            if removed_placeholders:
+                logger.warning(
+                    f"발행 전 이미지 자리표시자 {removed_placeholders}개를 제거했습니다."
+                )
+            await assert_no_unresolved_image_placeholders(page)
 
         # 5. 발행 또는 임시저장
         if publish:

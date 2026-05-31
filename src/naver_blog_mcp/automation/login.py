@@ -8,6 +8,7 @@ from typing import Optional
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from .selectors import LOGIN_ID_INPUT, LOGIN_PW_INPUT, LOGIN_BTN
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,28 @@ class InvalidCredentialsError(NaverLoginError):
     """잘못된 로그인 정보."""
 
     pass
+
+
+async def paste_login_text(page: Page, selector: str, text: str) -> None:
+    """네이버 로그인 입력칸에 값을 붙여넣기 방식으로 입력합니다."""
+    locator = page.locator(selector)
+    await locator.wait_for(state="visible", timeout=5000)
+    await locator.click()
+    try:
+        await page.context.grant_permissions(
+            ["clipboard-read", "clipboard-write"],
+            origin="https://nid.naver.com",
+        )
+        await page.evaluate(
+            "async (value) => navigator.clipboard.writeText(value)",
+            text,
+        )
+        await page.keyboard.press("Meta+A")
+        await page.keyboard.press("Backspace")
+        await page.keyboard.press("Meta+V")
+    except Exception:
+        await locator.fill(text)
+    await asyncio.sleep(config.ACTION_DELAY_SECONDS)
 
 
 async def login_to_naver(
@@ -69,12 +92,10 @@ async def login_to_naver(
         await asyncio.sleep(1)  # 페이지 로딩 대기
 
         # 2. 아이디 입력
-        await page.fill(LOGIN_ID_INPUT, user_id)
-        await asyncio.sleep(0.5)  # 자연스러운 타이핑 시뮬레이션
+        await paste_login_text(page, LOGIN_ID_INPUT, user_id)
 
         # 3. 비밀번호 입력
-        await page.fill(LOGIN_PW_INPUT, password)
-        await asyncio.sleep(0.5)
+        await paste_login_text(page, LOGIN_PW_INPUT, password)
 
         # 4. 로그인 버튼 클릭
         # 대체 셀렉터 시도
@@ -82,13 +103,19 @@ async def login_to_naver(
         if isinstance(LOGIN_BTN, list):
             for selector in LOGIN_BTN:
                 try:
-                    await page.click(selector, timeout=3000)
+                    locator = page.locator(selector).first
+                    await locator.wait_for(state="visible", timeout=3000)
+                    await locator.click(timeout=3000)
+                    await asyncio.sleep(config.ACTION_DELAY_SECONDS)
                     login_clicked = True
                     break
                 except PlaywrightTimeout:
                     continue
         else:
-            await page.click(LOGIN_BTN)
+            locator = page.locator(LOGIN_BTN).first
+            await locator.wait_for(state="visible", timeout=3000)
+            await locator.click(timeout=3000)
+            await asyncio.sleep(config.ACTION_DELAY_SECONDS)
             login_clicked = True
 
         if not login_clicked:
@@ -113,15 +140,15 @@ async def login_to_naver(
                             "CAPTCHA가 감지되었습니다. HEADLESS=false로 설정하고 수동으로 풀어주세요."
                         )
 
-                # 에러 메시지 확인 (여러 개가 있을 수 있으므로 first() 사용)
-                error_msg_element = page.locator(".error_message").first()
+                # 에러 메시지 확인 (여러 개가 있을 수 있으므로 first 사용)
+                error_msg_element = page.locator(".error_message").first
                 error_msg_count = await page.locator(".error_message:visible").count()
                 if error_msg_count > 0:
                     error_msg = await error_msg_element.text_content()
                     if error_msg and error_msg.strip():
                         raise InvalidCredentialsError(f"로그인 실패: {error_msg.strip()}")
 
-                raise NaverLoginError("로그인에 실패했습니다.")
+                raise NaverLoginError(f"로그인에 실패했습니다. current_url={current_url}")
 
         # 6. 세션 저장
         Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
@@ -206,8 +233,15 @@ async def verify_login_session(page: Page) -> bool:
         로그인 여부
     """
     try:
-        await page.goto("https://blog.naver.com", wait_until="load", timeout=10000)
-        await asyncio.sleep(1)  # 추가 로딩 대기
+        await page.goto(
+            "https://blog.naver.com/GoBlogWrite.naver",
+            wait_until="domcontentloaded",
+            timeout=15000,
+        )
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except PlaywrightTimeout:
+            pass
 
         # URL 및 쿠키 확인
         current_url = page.url
@@ -216,13 +250,22 @@ async def verify_login_session(page: Page) -> bool:
         if "nid.naver.com" in current_url:
             return False
 
-        # blog.naver.com 도메인에 있고 쿠키가 있으면 로그인된 것으로 간주
-        if "blog.naver.com" in current_url:
-            cookies = await page.context.cookies()
-            naver_cookies = [c for c in cookies if 'naver.com' in c['domain']]
-            return len(naver_cookies) > 0
+        if "blog.naver.com" not in current_url:
+            return False
 
-        return False
+        cookies = await page.context.cookies()
+        naver_cookies = [c for c in cookies if "naver.com" in c["domain"]]
+        if not naver_cookies:
+            return False
+
+        # 블로그 메인 접근만으로는 만료 세션이 통과할 수 있어 글쓰기 진입
+        # 가능 여부까지 확인합니다.
+        lowered_url = current_url.lower()
+        return (
+            "postwrite" in lowered_url
+            or "goblogwrite" in lowered_url
+            or "redirect=write" in lowered_url
+        )
     except Exception:
         return False
 

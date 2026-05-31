@@ -14,7 +14,7 @@ from typing import Optional, Union, List
 
 from playwright.async_api import Page, Frame, TimeoutError as PlaywrightTimeoutError
 
-from ..config import get_allowed_image_dirs
+from ..config import config, get_allowed_image_dirs
 from ..utils.exceptions import (
     UploadError,
     ElementNotFoundError,
@@ -58,6 +58,12 @@ UPLOADED_IMAGE_SELECTORS = [
 ]
 
 
+async def _action_pause(multiplier: float = 1.0) -> None:
+    delay = max(config.ACTION_DELAY_SECONDS * multiplier, 0)
+    if delay:
+        await asyncio.sleep(delay)
+
+
 def validate_image_path_allowed(image_path: Path) -> Path:
     """이미지 경로가 업로드 허용 디렉터리 안에 있는지 검증합니다."""
     resolved_path = image_path.expanduser().resolve()
@@ -80,14 +86,14 @@ def validate_image_path_allowed(image_path: Path) -> Path:
     )
 
 
-async def get_editor_frame(page: Page) -> Frame:
-    """글쓰기 에디터가 있는 iframe을 가져옵니다.
+async def get_editor_frame(page: Page) -> Frame | Page:
+    """글쓰기 에디터 컨텍스트를 가져옵니다.
 
     Args:
         page: Playwright Page 객체
 
     Returns:
-        에디터 iframe의 Frame 객체
+        에디터 iframe의 Frame 객체. iframe이 없는 스마트에디터 화면에서는 Page 객체.
 
     Raises:
         ElementNotFoundError: iframe을 찾을 수 없는 경우
@@ -108,9 +114,18 @@ async def get_editor_frame(page: Page) -> Frame:
             except PlaywrightTimeoutError:
                 continue
 
+        editor_selectors = [".se-canvas", "article.se-components-wrap", ".se-component"]
+        for selector in editor_selectors:
+            try:
+                if await page.locator(selector).count() > 0:
+                    logger.info(f"Editor found on main page: {selector}")
+                    return page
+            except Exception:
+                continue
+
         raise ElementNotFoundError(
             "Editor iframe not found",
-            details={"selectors": iframe_selectors}
+            details={"selectors": iframe_selectors + editor_selectors}
         )
 
     except PlaywrightTimeoutError as e:
@@ -131,11 +146,18 @@ async def click_image_button(frame: Frame) -> None:
     """
     for selector in IMAGE_BUTTON_SELECTORS:
         try:
-            button = frame.locator(selector).first
-            if await button.count() > 0:
+            locator_group = frame.locator(selector)
+            count = await locator_group.count()
+            for index in range(min(count, 10)):
+                button = locator_group.nth(index)
+                try:
+                    if not await button.is_visible():
+                        continue
+                except Exception:
+                    continue
                 await button.click()
-                logger.info(f"Image button clicked: {selector}")
-                await asyncio.sleep(0.5)  # 파일 input 생성 대기
+                logger.info("Image button clicked: %s[%s]", selector, index)
+                await _action_pause()
                 return
         except Exception as e:
             logger.debug(f"Failed to click {selector}: {e}")
@@ -162,7 +184,7 @@ async def find_file_input(frame: Frame, timeout: int = 5000):
                     return candidate
             except Exception:
                 continue
-        await asyncio.sleep(0.2)
+        await _action_pause(0.35)
 
     raise ElementNotFoundError(
         "File input not found after clicking image button",
@@ -312,10 +334,11 @@ async def upload_image(
             except ElementNotFoundError:
                 if attempt == 1:
                     raise
-                await asyncio.sleep(0.5)
+                await _action_pause()
 
         # 파일 업로드
         await file_input.set_input_files(str(image_path.absolute()))
+        await _action_pause()
         logger.info(f"File selected: {image_path}")
 
         # 업로드 완료 대기
@@ -396,6 +419,7 @@ async def paste_image(
     )
 
     await page.keyboard.press("Meta+V")
+    await _action_pause()
 
     if wait_for_complete:
         await wait_for_upload_complete(
@@ -563,7 +587,7 @@ async def upload_images(
                 logger.warning(f"✗ {Path(image_path).name}")
 
             # 이미지 간 간격
-            await asyncio.sleep(0.5)
+            await _action_pause()
 
         except Exception as e:
             logger.error(f"Failed to upload {image_path}: {e}")

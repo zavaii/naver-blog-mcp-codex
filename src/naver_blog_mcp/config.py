@@ -20,6 +20,7 @@ class Config:
     # Playwright 설정
     HEADLESS: bool = os.getenv("HEADLESS", "true").lower() == "true"
     SLOW_MO: int = int(os.getenv("SLOW_MO", "0"))
+    ACTION_DELAY_SECONDS: float = float(os.getenv("ACTION_DELAY_SECONDS", "0.8"))
 
     # 로깅 설정
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
